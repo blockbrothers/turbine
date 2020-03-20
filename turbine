@@ -1,0 +1,189 @@
+#!/bin/bash
+
+BASEDIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null && pwd )"
+
+
+__init() {
+    TURBINE_VERSION="$(git describe --tags)"
+    STEEMD_VERSION=""
+    REQ_VERSION=""
+    MIRA=true
+    CONFIGURED=true
+    CONTAINER_NAME=""
+    CONTAINER_RUNNING=false
+
+    [ -f "$BASEDIR/steem/data/config.ini" ] || CONFIGURED=false
+
+    CONTAINER_NAME="$(docker ps -a --filter ancestor="steem" --format "{{.Names}}"|head -n 1)"
+    if [ -n "$CONTAINER_NAME" ]; then
+        STEEMD_VERSION="$(docker run --rm -it steem steemd --version|egrep '(steem_blockchain_version|steem_git_revision)')"
+        [ -n "$(docker ps --quiet --filter name="$CONTAINER_NAME")" ] && CONTAINER_RUNNING=true
+    fi
+}
+
+
+build_setup() {
+    cd "$BASEDIR/build"
+    #docker build --no-cache -t steemdbuilder .
+    docker build -t steemdbuilder .
+    git clone --recursive https://github.com/steemit/steem.git ./src/
+}
+
+build() {
+    if [ ! -d "$BASEDIR/build/src" ]; then
+        build_setup
+    fi
+
+    cd "$BASEDIR/build/src"
+    git checkout ${REQ_VERSION:-master}
+    git pull
+    git submodule update --init --recursive
+
+    cd "$BASEDIR"
+    docker run -ti --rm -v "$BASEDIR/build/src:/steem/src" -v "$BASEDIR/build/bin:/steem/build" steemdbuilder
+}
+
+build_image() {
+    cd "$BASEDIR"
+    echo docker build --no-cache -t steem .
+}
+
+run() {
+    case $1 in
+        witness)
+            CONTAINER_NAME="witness"
+            ;;
+        seed)
+            CONTAINER_NAME="seed"
+            ;;
+        *)
+            echo "Missing or invalid container name (can only be \"witness\" or \"seed\")."
+            exit 1
+    esac
+    shift
+
+    if [ $CONFIGURED == false ]; then
+        init_config
+    fi
+
+    if [ $MIRA ]; then
+        echo docker run -v "$BASEDIR/steem/data:/steem/data" -d --name $CONTAINER_NAME --log-opt max-size=10m --log-opt max-file=1 -t steem "$@"
+    else
+        echo docker run -v /dev/shm:/shm -v "$BASEDIR/steem/data:/steem/data" -d --name $CONTAINER_NAME --log-opt max-size=10m --log-opt max-file=1 -t steem "$@"
+    fi
+}
+
+stop() {
+    if [ -z "$CONTAINER_NAME" ]; then
+        echo "No steem container found."
+        exit 1
+    fi
+    echo docker stop "$CONTAINER_NAME"
+    echo docker rm "$CONTAINER_NAME"
+}
+
+install() {
+    echo docker pull blockbrothers/steem:"${REQ_VERSION:-latest}"
+    echo docker tag blockbrothers/steem:"${REQ_VERSION:-latest}" steem
+}
+
+init_config() {
+    echo "init config"
+    TOTALRAM="$(grep MemTotal /proc/meminfo | awk '{print $2}')"
+    echo $TOTALRAM
+
+    if [ $MIRA ]; then
+        echo cp "$BASEDIR/steem/data/database.cfg.example" "$BASEDIR/steem/data/database.cfg"
+    fi
+}
+
+update() {
+    if [ -z "$CONTAINER_NAME" ]; then
+        echo "Unable to update: Container not found."
+        exit 1
+    fi
+
+    echo install
+    echo stop
+    echo docker rm "$CONTAINER_NAME"
+    echo run "$CONTAINER_NAME" "$@"
+}
+
+status() {
+    echo "SteemTurbine: ${TURBINE_VERSION}"
+    if [ -n $STEEMD_VERSION ]; then
+        echo "Steemd: ${STEEMD_VERSION}"
+    else
+        echo "Steemd: <UNKNOWN>"
+    fi
+    if [ -n $CONTAINER_NAME ]; then
+        echo "Docker container name: ${CONTAINER_NAME}"
+        if [ $CONTAINER_RUNNING ]; then
+            echo "Container status: Running"
+        else
+            echo "Container status: Stopped"
+        fi
+    fi
+
+    echo "######"
+    echo $CONTAINER_NAME
+    echo $CONTAINER_RUNNING
+    echo $STEEMD_VERSION
+}
+
+help() {
+    echo "turbine build_setup"
+    # turbine build v0.20.2
+    # turbine build_image
+    # turbine run witness
+    # turbine update v0.20.2
+    exit 0
+}
+
+
+
+__init
+init_config
+
+case $1 in
+    build_setup)
+        echo "build_setup"
+        build_setup
+        ;;
+    build)
+        echo "build"
+        REQ_VERSION=$2
+        build
+        ;;
+    build_image)
+        echo "build image"
+        build_image
+        ;;
+    run)
+        echo "run"
+        run "${@:2}"
+        ;;
+    stop)
+        echo "stop"
+        stop
+        ;;
+    update)
+        echo "update"
+        update "${@:2}"
+        ;;
+    status)
+        echo "status"
+        status
+        ;;
+    *)
+        echo "HELP"
+        help
+        ;;
+esac
+
+
+
+# echo "/proc/sys/vm/dirty_background_ratio     10"
+# echo "/proc/sys/vm/dirty_expire_centisecs     3000"
+# echo "/proc/sys/vm/dirty_ratio                20"
+# echo "/proc/sys/vm/dirty_writeback_centisecs  500"

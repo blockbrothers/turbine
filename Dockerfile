@@ -7,4 +7,4 @@ WORKDIR /steem
 
 COPY ./build/bin/programs/steemd/steemd ./bin/
 
-ENTRYPOINT ["./steemd", "--data-dir=/steem/data"]
+ENTRYPOINT ["./bin/steemd", "--data-dir=/steem/data"]
